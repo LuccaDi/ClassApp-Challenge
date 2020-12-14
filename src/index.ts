@@ -1,11 +1,8 @@
 import fs from "fs";
+import lodash from "lodash";
 import path from "path";
-import _ from "lodash";
-import { PhoneNumber } from "google-libphonenumber";
-import * as EmailValidator from "email-validator";
-
-const PNF = require("google-libphonenumber").PhoneNumberFormat;
-const phoneUtil = require("google-libphonenumber").PhoneNumberUtil.getInstance();
+import { validate } from "email-validator";
+import { PhoneNumber, PhoneNumberUtil } from "google-libphonenumber";
 interface Addresses {
   type: string;
   tags: string[];
@@ -17,11 +14,11 @@ function formatPhone(value: PhoneNumber) {
 }
 
 function verifyIsValidPhone(value: PhoneNumber): boolean {
-  return phoneUtil.isValidNumber(value);
+  return PhoneNumberUtil.getInstance().isValidNumber(value);
 }
 
 function verifyIsValidEmail(value: string): boolean {
-  return EmailValidator.validate(value);
+  return validate(value);
 }
 
 function formatBooleanData(value: any): Boolean {
@@ -42,14 +39,18 @@ function createAddress(header: string, property: string) {
   let addressHeader = header.split(" ");
   let addressType = addressHeader[0];
 
-  addressHeader = _.drop(addressHeader);
+  addressHeader = lodash.drop(addressHeader);
 
   let addressTags = addressHeader;
 
   if (addressType == "phone") {
+    //verifys if has any number on the data
     if (/\d/.test(property)) {
-      //verifys if has any number on the data
-      let phone = phoneUtil.parseAndKeepRawInput(property, "BR");
+      let phone = PhoneNumberUtil.getInstance().parseAndKeepRawInput(
+        property,
+        "BR"
+      );
+
       if (verifyIsValidPhone(phone)) {
         property = formatPhone(phone);
         return { type: addressType, tags: addressTags, address: property };
@@ -62,11 +63,13 @@ function createAddress(header: string, property: string) {
   } else if (addressType == "email") {
     let validEmail = "";
     let emails = property.split(" ");
+
     emails.map((value) => {
       if (verifyIsValidEmail(value)) {
         validEmail = value;
       }
     });
+
     if (validEmail != "") {
       return { type: addressType, tags: addressTags, address: validEmail };
     }
@@ -74,19 +77,13 @@ function createAddress(header: string, property: string) {
   return null;
 }
 
-function verifyEqualHeaders(
-  headers: string[],
-  differentHeaders: string[],
-  equalHeaders: string[]
-) {
-  for (let i = 0; i < headers.length; i++) {
-    let header = "";
+function verifyEqualHeaders(headers: string[], equalHeaders: string[]) {
+  let differentHeaders: string[] = [];
 
-    //remove quotes
-    for (let ch of headers[i]) {
-      if (ch == '"') ch = "";
-      header += ch;
-    }
+  for (let i = 0; i < headers.length; i++) {
+    let header = headers[i];
+
+    header = header.replace(/\"/g, "");
 
     if (differentHeaders.indexOf(header) != -1) {
       let index = differentHeaders.indexOf(header);
@@ -111,11 +108,10 @@ function main() {
 
   let headers = input[0].split(",");
 
-  let differentHeaders: string[] = [];
-  let equalHeaders: string[] = [];
+  let duplicatedHeaders: string[] = [];
 
   //remove quotes, verify equal headers
-  verifyEqualHeaders(headers, differentHeaders, equalHeaders);
+  verifyEqualHeaders(headers, duplicatedHeaders);
 
   //go through the lines of the file, except for the header
   for (let i = 1; i < input.length; i++) {
@@ -132,31 +128,24 @@ function main() {
 
     let addresses: Addresses[] = [];
 
-    let str = input[i];
-    let s = "";
+    let row = input[i];
     let addAddress;
 
-    //verifys separators and characters
-    let flag = 0;
-    for (let ch of str) {
-      if (ch === '"' && flag === 0) {
-        flag = 1;
-      } else if (ch === '"' && flag == 1) flag = 0;
-      if (ch === "," && flag === 1) ch = "/";
-      if (ch === "," && flag === 0) ch = "|";
-      if (ch !== '"') s += ch;
-    }
+    row = row
+      .replace(/\,+(?=(?:(?:[^"]*"){2})*[^"]*"[^"]*$)/g, "/")
+      .replace(/\"/g, "")
+      .replace(/\,/g, "|");
 
-    let properties = s.split("|");
+    let rowFields = row.split("|");
 
     //go through each cell of each line of the file
-    for (let j in headers) {
+    for (let idx in headers) {
       let data;
 
       //checks if person already exists
-      if (headers[j] == "eid") {
+      if (headers[idx] == "eid") {
         result.map((value, index) => {
-          if (properties[j] == value[headers[j]]) {
+          if (rowFields[idx] == value[headers[idx]]) {
             obj = value;
 
             addresses = obj["addresses"];
@@ -168,24 +157,29 @@ function main() {
       }
 
       //checks if the cell contains more than one data
-      if (properties[j].includes("/")) {
-        data = properties[j].split("/").map((item) => item.trim()); //split the cell data
+      if (rowFields[idx].includes("/")) {
+        //split the cell data
+        data = rowFields[idx].split("/").map((item) => item.trim());
+
         //checks if the header contain tags, so is an address header
-        if (headers[j].includes(" ")) {
+        if (headers[idx].includes(" ")) {
           data.map((item) => {
             //for each address data, creates a new address
-            addAddress = createAddress(headers[j], item);
+            addAddress = createAddress(headers[idx], item);
+
             if (addAddress != null) {
               addresses.push(addAddress);
             }
           });
         }
-        //checks if is not an empty cell
-      } else if (properties[j] != "") {
-        data = properties[j].trim();
+        //checks if it is not an empty cell
+      } else if (rowFields[idx] != "") {
+        data = rowFields[idx].trim();
+
         //checks if the header contain tags, so it is an address header
-        if (headers[j].includes(" ")) {
-          addAddress = createAddress(headers[j], data);
+        if (headers[idx].includes(" ")) {
+          addAddress = createAddress(headers[idx], data);
+
           if (addAddress != null) {
             addresses.push(addAddress);
           }
@@ -193,28 +187,35 @@ function main() {
       }
 
       //checks if it is an address header or not
-      if (!headers[j].includes(" ")) {
+      if (!headers[idx].includes(" ")) {
         //checks if it is an header that repeats
-        if (equalHeaders.includes(headers[j])) {
+        if (duplicatedHeaders.includes(headers[idx])) {
           //checks if the data contains more than one information
           if (typeof data == "object") {
             //for each information concatenates to the obejct that already exists
             data.map((value) => {
-              if (!_.includes(obj[headers[j] + "s"], value)) {
-                obj[headers[j] + "s"] = _.concat(obj[headers[j] + "s"], value);
+              if (!lodash.includes(obj[headers[idx] + "s"], value)) {
+                obj[headers[idx] + "s"] = lodash.concat(
+                  obj[headers[idx] + "s"],
+                  value
+                );
               }
             });
           } else {
-            if (!_.includes(obj[headers[j] + "s"], data)) {
-              obj[headers[j] + "s"] = _.concat(obj[headers[j] + "s"], data); //concatenates the information to the object that already exists
+            //concatenates the information to the object that already exists
+            if (!lodash.includes(obj[headers[idx] + "s"], data)) {
+              obj[headers[idx] + "s"] = lodash.concat(
+                obj[headers[idx] + "s"],
+                data
+              );
             }
           }
         } else {
           //checks if it is one of the boolean data headers
-          if (headers[j] == "invisible" || headers[j] == "see_all") {
-            obj[headers[j]] = formatBooleanData(data);
+          if (headers[idx] == "invisible" || headers[idx] == "see_all") {
+            obj[headers[idx]] = formatBooleanData(data);
           } else {
-            obj[headers[j]] = data;
+            obj[headers[idx]] = data;
           }
         }
       } else {
@@ -222,11 +223,11 @@ function main() {
       }
 
       //removes any null or empty values from the object
-      _.remove(obj[headers[j]], (value) => {
+      lodash.remove(obj[headers[idx]], (value) => {
         return value == null || value == "";
       });
 
-      _.remove(obj[headers[j] + "s"], (value) => {
+      lodash.remove(obj[headers[idx] + "s"], (value) => {
         return value == null || value == "";
       });
     }
